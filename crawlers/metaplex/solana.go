@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/bugout-dev/bugout-go/pkg/utils"
+	"golang.org/x/mod/semver"
 	"golang.org/x/time/rate"
 )
 
@@ -27,8 +29,10 @@ type SolanaClient struct {
 	// methods at high enough concurrently, we should use this RateLimiter as a total rate limiter
 	// (API-level) and also use separate method-level rate limiters with the lower method-specific
 	// limits.
-	RateLimiter       *rate.Limiter
-	SolanaCoreVersion string
+	RateLimiter         *rate.Limiter
+	SolanaCoreVersion   string
+	getBlocksMethodName string
+	getBlockMethodName  string
 }
 
 // Base struct representing a JSON RPC request to the Solana JSON RPC API.
@@ -48,8 +52,70 @@ type SolanaJSONRPCResponse struct {
 	Result         interface{} `json:"result"`
 }
 
+// Result type for getVersion request
 type GetVersionResult struct {
 	SolanaCoreVersion string `json:"solana-core"`
+}
+
+// Result type for getBlocks request
+type GetBlocksResult struct {
+	BlockNumbers []uint64 `json:"blockNumbers"`
+}
+
+type ProgramInstruction struct {
+	ProgramIDIndex int    `json:"programIdIndex"`
+	Accounts       []int  `json:"accounts"`
+	Data           string `json:"data"`
+}
+
+type TransactionHeader struct {
+	NumRequiredSignatures       int `json:"numRequiredSignatures"`
+	NumReadonlySignedAccounts   int `json:"numReadonlySignedAccounts"`
+	NumReadonlyUnsignedAccounts int `json:"numReadonlyUnsignedAccounts"`
+}
+
+type TransactionMessage struct {
+	AccountKeys     []string             `json:"accountKeys"`
+	Header          TransactionHeader    `json:"header"`
+	RecentBlockhash string               `json:"recentBlockhash"`
+	Instructions    []ProgramInstruction `json:"instructions"`
+}
+
+type Transaction struct {
+	Signatures []string           `json:"signatures"`
+	Message    TransactionMessage `json:"message"`
+}
+
+type TransactionMetadata struct {
+	Err          interface{} `json:"err"`
+	Fee          uint64      `json:"fee"`
+	PreBalances  []uint64    `json:"preBalances"`
+	PostBalances []uint64    `json:"postBalances"`
+	// TODO(zomglings): Add support for other metadata as per https://docs.solana.com/developing/clients/jsonrpc-api#results-2
+}
+
+type ResolvedTransaction struct {
+	Transaction Transaction         `json:"transaction"`
+	Meta        TransactionMetadata `json:"meta"`
+}
+
+type Reward struct {
+	Pubkey      string `json:"pubkey"`
+	Lamports    int64  `json:"lamports"`
+	PostBalance uint64 `json:"postBalance"`
+	RewardType  string `json:"rewardType"`
+}
+
+// Result type for getBlock request
+type GetBlockResult struct {
+	Blockhash         string                `json:"blockhash"`
+	PreviousBlockhash string                `json:"previousBlockhash"`
+	ParentSlot        uint64                `json:"parentSlot"`
+	Transactions      []ResolvedTransaction `json:"transactions"`
+	Signatures        []string              `json:"signatures"`
+	Rewards           []Reward              `json:"rewards"`
+	BlockTime         int64                 `json:"blockTime"`
+	BlockHeight       uint64                `json:"blockHeight"`
 }
 
 // TODO(zomglings): Add support for batched requests as per https://docs.solana.com/developing/clients/jsonrpc-api#request-formatting
@@ -112,33 +178,92 @@ func (client *SolanaClient) Call(methodName string, parameters ...interface{}) (
 	return APIResponse.Result, nil
 }
 
+// See the documentation at: https://docs.solana.com/developing/clients/jsonrpc-api#getversion
 func (client *SolanaClient) GetVersion() (GetVersionResult, error) {
 	parsedResult := GetVersionResult{}
-	result, err := client.Call("getVersion")
+	rawResult, err := client.Call("getVersion")
 	if err != nil {
 		return parsedResult, err
 	}
 
-	solanaCoreVersion, ok := result.(map[string]interface{})["solana-core"]
+	solanaCoreVersion, ok := rawResult.(map[string]interface{})["solana-core"]
 	if !ok {
-		return parsedResult, fmt.Errorf("getVersion result did not contain solana-core key: %v", result)
+		return parsedResult, fmt.Errorf("getVersion result did not contain solana-core key: %v", rawResult)
 	}
 	parsedResult.SolanaCoreVersion = solanaCoreVersion.(string)
 	return parsedResult, nil
 }
 
-// // https://docs.solana.com/developing/clients/jsonrpc-api#getblocks
-// func (client *SolanaClient) GetBlocks(startSlot, endSlot uint64) {
+// See the documentation at: https://docs.solana.com/developing/clients/jsonrpc-api#getblocks
+func (client *SolanaClient) GetBlocks(startSlot, endSlot uint64) (GetBlocksResult, error) {
+	parsedResult := GetBlocksResult{}
+	// From documentation
+	var maxSlotDifference uint64 = 500000
+	if endSlot < startSlot {
+		return parsedResult, fmt.Errorf("invalid parameters to getBlocks: startSlot(=%d) must not be greater than endSlot(=%d)", startSlot, endSlot)
+	}
+	if endSlot > startSlot+maxSlotDifference {
+		return parsedResult, fmt.Errorf("invalid parameters to getBlocks: endSlot(=%d) must not be exceed startSlot(=%d) by more than %d", endSlot, startSlot, maxSlotDifference)
+	}
+	rawResult, err := client.Call(client.getBlocksMethodName, startSlot, endSlot)
+	if err != nil {
+		return parsedResult, fmt.Errorf("getBlocks call failed with error: %s", err.Error())
+	}
+	parsedResult.BlockNumbers = rawResult.([]uint64)
+	return parsedResult, nil
+}
 
-// }
+// See the documentation at: https://docs.solana.com/developing/clients/jsonrpc-api#getblock
+// TODO(zomglings): Add support for configuration object parameter. For now, the defaults give us
+// all the information we need.
+func (client *SolanaClient) GetBlock(slot uint64) (GetBlockResult, error) {
+	parsedResult := GetBlockResult{}
+	rawResult, err := client.Call(client.getBlockMethodName, slot)
+	if err != nil {
+		return parsedResult, fmt.Errorf("getBlock call failed with error: %s", err.Error())
+	}
+	if rawResult == nil {
+		return parsedResult, errors.New("getBlock returned null result (could be because block is not confirmed)")
+	}
+	rawResultMap := rawResult.(map[string]interface{})
 
+	if blockhash, ok := rawResultMap["blockhash"]; ok {
+		parsedResult.Blockhash = blockhash.(string)
+	}
+	if previousBlockhash, ok := rawResultMap["previousBlockhash"]; ok {
+		parsedResult.PreviousBlockhash = previousBlockhash.(string)
+	}
+	if parentSlot, ok := rawResultMap["parentSlot"]; ok {
+		parsedResult.ParentSlot = parentSlot.(uint64)
+	}
+	if blockTime, ok := rawResultMap["blockTime"]; ok {
+		parsedResult.BlockTime = blockTime.(int64)
+	}
+	if blockHeight, ok := rawResultMap["blockHeight"]; ok {
+		parsedResult.BlockHeight = blockHeight.(uint64)
+	}
+	if rewards, ok := rawResultMap["rewards"]; ok {
+		parsedResult.Rewards = rewards.([]Reward)
+	}
+	if signatures, ok := rawResultMap["signatures"]; ok {
+		parsedResult.Signatures = signatures.([]string)
+	}
+
+	return parsedResult, nil
+}
+
+// Generates a new Solana client with the SolanaCoreVersion populated as well as the appropriate
+// JSON RPC method names for methods that underwent deprecation and an upgrade with new names (e.g.
+// getConfirmedBlock -> getBlock).
 func NewSolanaClient(solanaAPIURL string, timeout time.Duration, requestRate float64) (*SolanaClient, error) {
 	rateLimiter := rate.NewLimiter(rate.Limit(requestRate), int(requestRate))
 	HTTPClient := http.Client{Timeout: timeout}
 	client := SolanaClient{
-		SolanaAPIURL: solanaAPIURL,
-		HTTPClient:   &HTTPClient,
-		RateLimiter:  rateLimiter,
+		SolanaAPIURL:        solanaAPIURL,
+		HTTPClient:          &HTTPClient,
+		RateLimiter:         rateLimiter,
+		getBlocksMethodName: "getBlocks",
+		getBlockMethodName:  "getBlock",
 	}
 
 	result, err := client.GetVersion()
@@ -147,6 +272,11 @@ func NewSolanaClient(solanaAPIURL string, timeout time.Duration, requestRate flo
 	}
 
 	client.SolanaCoreVersion = result.SolanaCoreVersion
+
+	if semver.Compare(client.SolanaCoreVersion, "1.7") < 0 {
+		client.getBlocksMethodName = "getConfirmedBlocks"
+		client.getBlockMethodName = "getConfirmedBlock"
+	}
 
 	return &client, nil
 }
