@@ -92,5 +92,9 @@ func main() {
 	if solanaClientErr != nil {
 		panic(solanaClientErr)
 	}
-	fmt.Println(solanaClient.SolanaCoreVersion)
+	block, err := solanaClient.GetBlock(86842651)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(block)
 }

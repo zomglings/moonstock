@@ -225,31 +225,16 @@ func (client *SolanaClient) GetBlock(slot uint64) (GetBlockResult, error) {
 	if rawResult == nil {
 		return parsedResult, errors.New("getBlock returned null result (could be because block is not confirmed)")
 	}
-	rawResultMap := rawResult.(map[string]interface{})
 
-	if blockhash, ok := rawResultMap["blockhash"]; ok {
-		parsedResult.Blockhash = blockhash.(string)
-	}
-	if previousBlockhash, ok := rawResultMap["previousBlockhash"]; ok {
-		parsedResult.PreviousBlockhash = previousBlockhash.(string)
-	}
-	if parentSlot, ok := rawResultMap["parentSlot"]; ok {
-		parsedResult.ParentSlot = parentSlot.(uint64)
-	}
-	if blockTime, ok := rawResultMap["blockTime"]; ok {
-		parsedResult.BlockTime = blockTime.(int64)
-	}
-	if blockHeight, ok := rawResultMap["blockHeight"]; ok {
-		parsedResult.BlockHeight = blockHeight.(uint64)
-	}
-	if rewards, ok := rawResultMap["rewards"]; ok {
-		parsedResult.Rewards = rewards.([]Reward)
-	}
-	if signatures, ok := rawResultMap["signatures"]; ok {
-		parsedResult.Signatures = signatures.([]string)
+	jsonBytes := new(bytes.Buffer)
+	encodeErr := json.NewEncoder(jsonBytes).Encode(rawResult)
+	if encodeErr != nil {
+		return parsedResult, encodeErr
 	}
 
-	return parsedResult, nil
+	decodeErr := json.NewDecoder(jsonBytes).Decode(&parsedResult)
+
+	return parsedResult, decodeErr
 }
 
 // Generates a new Solana client with the SolanaCoreVersion populated as well as the appropriate
@@ -273,7 +258,7 @@ func NewSolanaClient(solanaAPIURL string, timeout time.Duration, requestRate flo
 
 	client.SolanaCoreVersion = result.SolanaCoreVersion
 
-	if semver.Compare(client.SolanaCoreVersion, "1.7") < 0 {
+	if semver.Compare(fmt.Sprintf("v%s", client.SolanaCoreVersion), "v1.7.0") < 0 {
 		client.getBlocksMethodName = "getConfirmedBlocks"
 		client.getBlockMethodName = "getConfirmedBlock"
 	}
