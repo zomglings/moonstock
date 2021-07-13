@@ -83,4 +83,13 @@ func main() {
 			log.Fatalf("No output journal specified at command line (using -output argument), and %s environment variable not set.\n", bugoutJournalIDEnvvar)
 		}
 	}
+
+	crawler, createCrawlerErr := NewCrawler(bugoutToken, bugoutJournalID, cursorName, startSlot)
+	if err != nil {
+		panic(createCrawlerErr)
+	}
+	crawlErr := crawler.Crawl()
+	if err != nil {
+		panic(crawlErr)
+	}
 }

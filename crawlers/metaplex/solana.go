@@ -16,6 +16,7 @@ import (
 
 var MainnetAPIURL string = "https://api.mainnet-beta.solana.com"
 var CurrentJSONRPCVersion string = "2.0"
+var maxSlotDifference uint64 = 500000
 
 // Minimal implementation of a Solana JSON RPC API client. Only implements the methods we need
 // to crawl information about metaplex marketplaces.
@@ -55,6 +56,11 @@ type SolanaJSONRPCResponse struct {
 // Result type for getVersion request
 type GetVersionResult struct {
 	SolanaCoreVersion string `json:"solana-core"`
+}
+
+// Result type for the getSlot request
+type GetSlotResult struct {
+	Slot uint64 `json:"slot"`
 }
 
 // Result type for getBlocks request
@@ -194,11 +200,21 @@ func (client *SolanaClient) GetVersion() (GetVersionResult, error) {
 	return parsedResult, nil
 }
 
+// See the documentation at: https://docs.solana.com/developing/clients/jsonrpc-api#getslot
+func (client *SolanaClient) GetSlot() (GetSlotResult, error) {
+	parsedResult := GetSlotResult{}
+	rawResult, err := client.Call("getSlot")
+	if err != nil {
+		return parsedResult, err
+	}
+	parsedResult.Slot = uint64(rawResult.(float64))
+	return parsedResult, err
+}
+
 // See the documentation at: https://docs.solana.com/developing/clients/jsonrpc-api#getblocks
 func (client *SolanaClient) GetBlocks(startSlot, endSlot uint64) (GetBlocksResult, error) {
 	parsedResult := GetBlocksResult{}
 	// From documentation
-	var maxSlotDifference uint64 = 500000
 	if endSlot < startSlot {
 		return parsedResult, fmt.Errorf("invalid parameters to getBlocks: startSlot(=%d) must not be greater than endSlot(=%d)", startSlot, endSlot)
 	}
@@ -209,7 +225,11 @@ func (client *SolanaClient) GetBlocks(startSlot, endSlot uint64) (GetBlocksResul
 	if err != nil {
 		return parsedResult, fmt.Errorf("getBlocks call failed with error: %s", err.Error())
 	}
-	parsedResult.BlockNumbers = rawResult.([]uint64)
+	rawResultAsSlice := rawResult.([]interface{})
+	parsedResult.BlockNumbers = make([]uint64, len(rawResultAsSlice))
+	for i, rawBlockNumber := range rawResultAsSlice {
+		parsedResult.BlockNumbers[i] = uint64(rawBlockNumber.(float64))
+	}
 	return parsedResult, nil
 }
 
@@ -241,7 +261,7 @@ func (client *SolanaClient) GetBlock(slot uint64) (GetBlockResult, error) {
 // JSON RPC method names for methods that underwent deprecation and an upgrade with new names (e.g.
 // getConfirmedBlock -> getBlock).
 func NewSolanaClient(solanaAPIURL string, timeout time.Duration, requestRate float64) (*SolanaClient, error) {
-	rateLimiter := rate.NewLimiter(rate.Limit(requestRate), int(requestRate))
+	rateLimiter := rate.NewLimiter(rate.Limit(requestRate), 1)
 	HTTPClient := http.Client{Timeout: timeout}
 	client := SolanaClient{
 		SolanaAPIURL:        solanaAPIURL,
