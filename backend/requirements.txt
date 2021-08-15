@@ -4,6 +4,7 @@ black==21.7b0
 boto3==1.18.1
 botocore==1.21.1
 bugout==0.1.16
+bugout-infestor==0.0.6
 certifi==2021.5.30
 charset-normalizer==2.0.3
 click==8.0.1

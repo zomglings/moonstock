@@ -10,7 +10,13 @@ setup(
     name="moonstream",
     version=MOONSTREAM_VERSION,
     packages=find_packages(),
-    install_requires=["boto3", "bugout >= 0.1.16", "fastapi", "uvicorn"],
+    install_requires=[
+        "boto3",
+        "bugout >= 0.1.16",
+        "bugout-infestor >= 0.0.6",
+        "fastapi",
+        "uvicorn",
+    ],
     extras_require={
         "dev": ["black", "mypy"],
         "distribute": ["setuptools", "twine", "wheel"],
